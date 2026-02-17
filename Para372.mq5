@@ -44,10 +44,15 @@ input double RiskPercent = 2.0;                // リスク（口座残高の%�
 
 //--- パラボリックSAR設定
 input group "=== パラボリックSAR設定 ==="
-input double Step15m = 0.001;                  // 15分足ステップ
-input double Step1h = 0.01;                    // 1時間足ステップ
-input double Step4h = 0.035;                   // 4時間足ステップ
+input double Step15m = 0.02;                   // 15分足ステップ（大きいほどシグナル少）
+input double Step1h = 0.02;                    // 1時間足ステップ
+input double Step4h = 0.04;                    // 4時間足ステップ
 input double Maximum = 0.2;                    // 最大値
+
+//--- 決済条件設定
+input group "=== 決済条件設定 ==="
+input bool Close_Use15m = true;                // 15m足SARで決済
+input bool Close_Use1h  = false;               // 1h足SARで決済（15mとOR条件）
 
 //--- SL/TP設定
 input group "=== ストップロス/テイクプロフィット設定 ==="
@@ -278,32 +283,48 @@ void CheckForClose()
     //--- 確定足の価格を取得
     double close1 = iClose(_Symbol, PERIOD_M15, 1);
     
-    //--- ドテン判定
-    bool shouldCloseBuy = false;
-    bool shouldCloseSell = false;
+    //--- 決済シグナル判定（OR条件 = どちらか1つでも反転したら決済）
+    bool closeSellSignal = false;
+    bool closeBuySignal  = false;
+    
+    // 買いポジション決済条件（売りシグナル）
+    if(Close_Use15m && (close1 < sar15m[1]))
+        closeSellSignal = true;
+    if(Close_Use1h && (close1 < sar1h[1]))
+        closeSellSignal = true;
+    
+    // 売りポジション決済条件（買いシグナル）
+    if(Close_Use15m && (close1 > sar15m[1]))
+        closeBuySignal = true;
+    if(Close_Use1h && (close1 > sar1h[1]))
+        closeBuySignal = true;
     
     if(positionType == POSITION_TYPE_BUY)
     {
-        // 買いポジションを持っている場合、売りシグナルで決済
-        shouldCloseBuy = (close1 < sar15m[1]) && (close1 < sar1h[1]) && (close1 < sar4h[1]);
-        
-        if(shouldCloseBuy)
+        if(closeSellSignal)
         {
+            if(VerboseLog)
+            {
+                string trigger = Close_Use15m && (close1 < sar15m[1]) ? "15m" : "1h";
+                Print("🔄 決済シグナル(買→決済) ", trigger, "足SAR反転");
+            }
             ClosePosition();
-            // ドテン: 即座に売りポジションを開く
+            // ドテン
             if(CheckTrendFilter(false) && !IsNewsTime())
                 OpenPosition(ORDER_TYPE_SELL);
         }
     }
     else if(positionType == POSITION_TYPE_SELL)
     {
-        // 売りポジションを持っている場合、買いシグナルで決済
-        shouldCloseSell = (close1 > sar15m[1]) && (close1 > sar1h[1]) && (close1 > sar4h[1]);
-        
-        if(shouldCloseSell)
+        if(closeBuySignal)
         {
+            if(VerboseLog)
+            {
+                string trigger = Close_Use15m && (close1 > sar15m[1]) ? "15m" : "1h";
+                Print("🔄 決済シグナル(売→決済) ", trigger, "足SAR反転");
+            }
             ClosePosition();
-            // ドテン: 即座に買いポジションを開く
+            // ドテン
             if(CheckTrendFilter(true) && !IsNewsTime())
                 OpenPosition(ORDER_TYPE_BUY);
         }
