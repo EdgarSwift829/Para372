@@ -731,4 +731,42 @@ bool IsNewsTime()
     
     return false;
 }
+
+//+------------------------------------------------------------------+
+//| OnTester - 最適化スコア計算                                         |
+//| 「Custom max」基準で最適化する際に使用される                          |
+//+------------------------------------------------------------------+
+double OnTester()
+{
+    //--- テスト結果を取得
+    double profit        = TesterStatistics(STAT_PROFIT);           // 純利益
+    double profitFactor  = TesterStatistics(STAT_PROFIT_FACTOR);    // プロフィットファクター
+    double maxDrawdown   = TesterStatistics(STAT_EQUITY_DD_RELATIVE); // 最大ドローダウン（%）
+    double totalTrades   = TesterStatistics(STAT_TRADES);           // 総トレード数
+    double winRate       = TesterStatistics(STAT_WIN_TRADES) /
+                           (totalTrades > 0 ? totalTrades : 1) * 100; // 勝率（%）
+    double sharpeRatio   = TesterStatistics(STAT_SHARPE_RATIO);     // シャープレシオ
+
+    //--- トレード数が少なすぎる場合は0を返す（信頼性が低い結果を排除）
+    if(totalTrades < 30)
+        return 0;
+
+    //--- 利益がマイナスの場合は0を返す
+    if(profit <= 0)
+        return 0;
+
+    //--- ドローダウンが大きすぎる場合は0を返す（20%超は除外）
+    if(maxDrawdown > 20.0)
+        return 0;
+
+    //--- カスタムスコアの計算
+    // プロフィットファクター × 勝率の重み - ドローダウンのペナルティ
+    double score = profitFactor * (winRate / 100.0) - (maxDrawdown / 100.0);
+
+    //--- シャープレシオが正の場合はボーナス加算
+    if(sharpeRatio > 0)
+        score += sharpeRatio * 0.1;
+
+    return score;
+}
 //+------------------------------------------------------------------+
