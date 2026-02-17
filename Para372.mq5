@@ -81,6 +81,12 @@ input string NewsCalendarURL = "https://www.forexfactory.com/calendar"; // カ�
 input group "=== 月末・月初停止 ==="
 input bool UseMonthEndStart = false;           // 月末月初停止機能使用
 
+//--- ロット管理
+input group "=== ロット管理 ==="
+input int    LotMode     = 0;                  // 0=残高%リスク 1=残高ステップ固定
+input double StepBalance = 50000;             // [Mode1] 何円ごとに0.01lot増やすか
+input double BaseLot     = 0.01;              // [Mode1] 基準ロット（最小単位）
+
 //--- ログ設定
 input group "=== ログ出力設定 ==="
 input bool VerboseLog = true;                  // 詳細ログ出力
@@ -453,56 +459,68 @@ void ClosePosition()
 //+------------------------------------------------------------------+
 double CalculateLotSize(double slDistance)
 {
-    //--- 口座残高を取得
     double accountBalance = AccountInfoDouble(ACCOUNT_BALANCE);
-    
-    //--- リスク金額を計算
-    double riskAmount = accountBalance * (RiskPercent / 100.0);
-    
-    //--- ピップ価値を計算
-    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-    
-    //--- SL幅をポイントに変換
-    double slPoints = slDistance / point;
-    
-    //--- ロットサイズを計算（修正版）
-    double riskPerLot = slPoints * tickValue;
-    double lotSize = riskAmount / riskPerLot;
-    
-    //--- ロット制限を適用
-    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double maxLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
     double lotStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-    
-    //--- 計算結果をログ出力（デバッグ用）
-    if(VerboseLog)
+    double lotSize = minLot;
+
+    //==========================================================
+    // Mode 0: 残高に対して%リスク（デフォルト）
+    //==========================================================
+    if(LotMode == 0)
     {
-        Print("--- ロット計算詳細 ---");
-        Print("口座残高: ", accountBalance, " 円");
-        Print("リスク%: ", RiskPercent, "% = ", riskAmount, " 円");
-        Print("SL幅: ", slDistance, " (", slPoints, " ポイント)");
-        Print("1ロットあたりリスク: ", riskPerLot, " 円");
-        Print("計算ロット: ", lotSize);
+        double riskAmount  = accountBalance * (RiskPercent / 100.0);
+        double tickValue   = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+        double point       = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+        double slPoints    = slDistance / point;
+        double riskPerLot  = slPoints * tickValue;
+        
+        lotSize = riskAmount / riskPerLot;
+        
+        if(VerboseLog)
+        {
+            Print("--- ロット計算 [Mode0: %リスク] ---");
+            Print("口座残高: ", accountBalance, " / リスク: ", RiskPercent, "% = ", riskAmount);
+            Print("SL幅: ", slPoints, " pts / 1lotリスク: ", riskPerLot);
+            Print("計算ロット: ", lotSize);
+        }
+        
+        if(lotSize < minLot)
+        {
+            Print("⚠️ 計算ロット(", NormalizeDouble(lotSize,3), ")が最小ロット(", minLot, ")未満");
+            Print("   必要資金目安: ", NormalizeDouble(riskPerLot * minLot / (RiskPercent / 100.0), 0), " 円");
+        }
     }
-    
-    //--- ロットステップに合わせて丸める
+    //==========================================================
+    // Mode 1: 残高ステップ固定（〇万円ごとに0.01lot）
+    //==========================================================
+    else if(LotMode == 1)
+    {
+        // 例: StepBalance=50000, BaseLot=0.01
+        // 残高  5万円 → 0.01lot
+        // 残高 10万円 → 0.02lot
+        // 残高 15万円 → 0.03lot
+        double steps = MathFloor(accountBalance / StepBalance);
+        steps = MathMax(steps, 1); // 最低1ステップ
+        lotSize = BaseLot * steps;
+        
+        if(VerboseLog)
+        {
+            Print("--- ロット計算 [Mode1: 残高ステップ] ---");
+            Print("口座残高: ", accountBalance, " / ステップ単位: ", StepBalance, " 円");
+            Print("ステップ数: ", steps, " / ロット: ", BaseLot, " × ", steps, " = ", lotSize);
+        }
+    }
+
+    //--- ロットステップに合わせて切り捨て
     lotSize = MathFloor(lotSize / lotStep) * lotStep;
     
-    //--- 最小・最大ロットの範囲内に収める
-    if(lotSize < minLot)
-    {
-        Print("⚠️ 計算ロット(", lotSize, ")が最小ロット(", minLot, ")未満");
-        Print("   必要資金目安: ", NormalizeDouble(riskPerLot * minLot / (RiskPercent / 100.0), 0), " 円");
-    }
-    
+    //--- 最小・最大ロット範囲内に収める
     lotSize = MathMax(minLot, MathMin(maxLot, lotSize));
     
     if(VerboseLog)
-    {
         Print("最終ロット: ", lotSize);
-        Print("---------------------");
-    }
     
     return lotSize;
 }
@@ -739,13 +757,15 @@ bool IsNewsTime()
 double OnTester()
 {
     //--- テスト結果を取得
-    double profit        = TesterStatistics(STAT_PROFIT);           // 純利益
-    double profitFactor  = TesterStatistics(STAT_PROFIT_FACTOR);    // プロフィットファクター
-    double maxDrawdown   = TesterStatistics(STAT_EQUITY_DD_RELATIVE); // 最大ドローダウン（%）
-    double totalTrades   = TesterStatistics(STAT_TRADES);           // 総トレード数
-    double winRate       = TesterStatistics(STAT_WIN_TRADES) /
-                           (totalTrades > 0 ? totalTrades : 1) * 100; // 勝率（%）
-    double sharpeRatio   = TesterStatistics(STAT_SHARPE_RATIO);     // シャープレシオ
+    double profit        = TesterStatistics(STAT_PROFIT);              // 純利益
+    double profitFactor  = TesterStatistics(STAT_PROFIT_FACTOR);       // プロフィットファクター
+    double maxDrawdown   = TesterStatistics(STAT_EQUITY_DDREL_PERCENT);// 最大ドローダウン（%）
+    double totalTrades   = TesterStatistics(STAT_TRADES);              // 総トレード数
+    double profitTrades  = TesterStatistics(STAT_PROFIT_TRADES);       // 利益トレード数
+    double sharpeRatio   = TesterStatistics(STAT_SHARPE_RATIO);        // シャープレシオ
+
+    //--- 勝率を計算
+    double winRate = (totalTrades > 0) ? (profitTrades / totalTrades * 100.0) : 0;
 
     //--- トレード数が少なすぎる場合は0を返す（信頼性が低い結果を排除）
     if(totalTrades < 30)
